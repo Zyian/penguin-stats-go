@@ -5,66 +5,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io/ioutil"
 	"net"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/pkg/errors"
 )
-
-type Server string
-type DropType string
-
-const (
-	ServerUS Server = "US"
-	ServerCN Server = "CN"
-	ServerJP Server = "JP"
-	ServerKR Server = "KR"
-
-	NormalDrop    DropType = "NORMAL_DROP"
-	SpecialDrop   DropType = "SPECIAL_DROP"
-	ExtraDrop     DropType = "EXTRA_DROP"
-	FurnitureDrop DropType = "FURNITURE"
-
-	BaseURL = "https://penguin-stats.io/PenguinStats/api/v2"
-)
-
-// PenguinClient is the singleton struct that handles data exchange with Penguin Stats API
-type PenguinClient struct {
-	client *http.Client
-}
-
-// Drop represents the results of an item obtained at the end of a given stage
-// At least one drop is required when sending results to the report API
-// 		DropType is one of the four static types (see constants)
-//		ItemID is a provided item ID obtained from either the data
-//		Quantity is how many of the items you obtained for the stage
-type Drop struct {
-	DropType DropType `json:"dropType,omitempty"`
-	ItemID   string   `json:"itemId,omitempty"`
-	Quantity int      `json:"quantity,omitempty"`
-}
-
-type DropMatrix struct {
-	rawData []rawData
-}
-
-type rawData struct {
-	StageID  string    `json:"stageId,omitempty"`
-	ItemID   string    `json:"itemId,omitempty"`
-	Quantity int       `json:"quantity,omitempty"`
-	Times    int       `json:"times,omitempty"`
-	Start    time.Time `json:"start,omitempty"`
-	End      time.Time `json:"end,omitempty"`
-}
-
-type reportPayload struct {
-	Server  string `json:"server,omitempty"`
-	StageID string `json:"stageId,omitempty"`
-	Drops   []Drop `json:"drops,omitempty"`
-	Source  string `json:"source,omitempty"`
-	Version string `json:"version,omitempty"`
-}
 
 // NewClient creates a new Penguin Stats client with a default timeout of 5 seconds
 // This is the same as calling NewClientWithTimeout(5)
@@ -88,8 +36,8 @@ func NewClientWithTimeout(timeout float64) *PenguinClient {
 }
 
 // ReportDrop submits a report of item drops obtained during a stage referenced by stageID
-// Setting `source` is **optional** and allows a user to define where the information comes from
-// Setting `version` is **optional** and allows a user to define what version of the source the report came from
+// 	Setting source is optional and allows a user to define where the information comes from
+// 	Setting version is optional and allows a user to define what version of the source the report came from
 func (pc *PenguinClient) ReportDrop(ctx context.Context, server Server, stageID string, drops []Drop, source, version string) (string, error) {
 	report := reportPayload{
 		Server:  string(server),
@@ -162,4 +110,68 @@ func (pc *PenguinClient) RecallLastReport(ctx context.Context, reportHash, sourc
 	}
 
 	return nil
+}
+
+// GetMatrixData requests the item drop rate matrix for a given Arknights Server, if no server is provided, default is CN (as stated in PenguinStats docs)
+func (pc *PenguinClient) GetMatrixData(ctx context.Context, server ...Server) (*DropMatrix, error) {
+	if len(server) > 1 {
+		return nil, fmt.Errorf("Bad parameter: server parameter must be 0 or 1")
+	}
+
+	s := ServerCN
+	if len(server) > 0 {
+		s = server[0]
+	}
+
+	return pc.requestMatrixData(ctx, s, false, false, "")
+}
+
+// GetMatrixDataCustomOptions allows specifying additional options, if isPersonal is set to true userID must be set
+func (pc *PenguinClient) GetMatrixDataCustomOptions(ctx context.Context, server Server, showClosedZones, isPersonal bool, userID string) (*DropMatrix, error) {
+	if isPersonal && userID == "" {
+		return nil, fmt.Errorf("personal stats specified but no user ID provided")
+	}
+	return pc.requestMatrixData(ctx, server, showClosedZones, isPersonal, userID)
+}
+
+func (pc *PenguinClient) requestMatrixData(ctx context.Context, server Server, showClosedZones, isPersonal bool, userID string) (*DropMatrix, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", BaseURL+"/result/matrix", nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if userID != "" {
+		req.AddCookie(&http.Cookie{
+			Name:  "userID",
+			Value: userID,
+		})
+	}
+
+	req.URL.Query().Add("server", string(server))
+	req.URL.Query().Add("show_closed_zones", strconv.FormatBool(showClosedZones))
+	req.URL.Query().Add("is_personal", strconv.FormatBool(isPersonal))
+
+	resp, err := pc.client.Do(req)
+	if err != nil {
+		return nil, errors.Wrap(err, "could not get matrix data")
+	}
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		b, err := ioutil.ReadAll(resp.Body)
+		if err != nil {
+			return nil, fmt.Errorf("recieved bad status code and could not read body: %v", err)
+		}
+		return nil, fmt.Errorf("recieved bad status code: %d %v", resp.StatusCode, string(b))
+	}
+
+	var data []StageDrop
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return nil, fmt.Errorf("could not decode body: %v", err)
+	}
+
+	return &DropMatrix{
+		rawData:   data,
+		stageMap:  make(map[string][]StageDrop),
+		processed: false,
+	}, nil
 }
