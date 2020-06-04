@@ -65,6 +65,7 @@ func (pc *PenguinClient) ReportDrop(ctx context.Context, server Server, stageID 
 	if err != nil {
 		return "", errors.Wrap(err, "unable to complete request")
 	}
+	defer resp.Body.Close()
 
 	if resp.StatusCode != 201 { //TODO: Better error handling, nasty response comes back when not compliant
 		return "", fmt.Errorf("PenguinStats returned a bad status code: %d", resp.StatusCode)
@@ -104,6 +105,7 @@ func (pc *PenguinClient) RecallLastReport(ctx context.Context, reportHash, sourc
 	if err != nil {
 		return errors.Wrap(err, "unable to complete request")
 	}
+	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
 		return fmt.Errorf("PenguinStats returned bad status code: %d", resp.StatusCode)
@@ -155,6 +157,7 @@ func (pc *PenguinClient) requestMatrixData(ctx context.Context, server Server, s
 	if err != nil {
 		return nil, errors.Wrap(err, "could not get matrix data")
 	}
+	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		b, err := ioutil.ReadAll(resp.Body)
@@ -174,4 +177,51 @@ func (pc *PenguinClient) requestMatrixData(ctx context.Context, server Server, s
 		stageMap:  make(map[string][]StageDrop),
 		processed: false,
 	}, nil
+}
+
+func (pc *PenguinClient) GetAllStages(ctx context.Context, server Server) ([]Stage, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", BaseURL+"/stages", nil)
+	if err != nil {
+		return nil, err
+	}
+
+	req.URL.Query().Add("server", string(server))
+
+	resp, err := pc.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	stages := []Stage{}
+	if err := json.NewDecoder(resp.Body).Decode(&stages); err != nil {
+		return nil, err
+	}
+
+	return stages, nil
+}
+
+func (pc *PenguinClient) SendArkPlan(ctx context.Context, payload ArkPlannerRequest) (*ArkPlannerPlan, error) {
+	p, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", PlannerURL, bytes.NewBuffer(p))
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := pc.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	plan := ArkPlannerPlan{}
+	if err := json.NewDecoder(resp.Body).Decode(&plan); err != nil {
+		return nil, err
+	}
+
+	return &plan, nil
 }

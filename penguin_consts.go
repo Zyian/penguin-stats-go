@@ -14,4 +14,7 @@ const (
 	FurnitureDrop DropType = "FURNITURE"
 )
 
-const BaseURL = "https://penguin-stats.io/PenguinStats/api/v2"
+const (
+	BaseURL    = "https://penguin-stats.io/PenguinStats/api/v2"
+	PlannerURL = "https://planner.penguin-stats.io/plan"
+)
